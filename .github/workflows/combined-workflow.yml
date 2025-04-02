@@ -69,8 +69,14 @@ jobs:
                 fi
               fi
               if [[ $file != ".github/workflows/"* ]]; then
-                # 不是.github/workflows目录下的文件才进行更新
-                git checkout remote_repo/"$local_branch" -- "$file"
+                # 检查文件是否存在于本地仓库
+                if git ls-tree -r "$local_branch" --name-only | grep -q "$file"; then
+                  # 对文件路径进行转义
+                  escaped_file=$(printf "%q" "$file")
+                  git checkout remote_repo/"$local_branch" -- "$escaped_file"
+                else
+                  echo "文件 $file 不在本地仓库，跳过更新"
+                fi
               fi
             done
             # 恢复特定文件和文件夹
