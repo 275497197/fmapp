@@ -1,39 +1,84 @@
-name: Generate F.json
+name: Detect Upstream Update and Generate F.json
 
 on:
   # 支持手动触发
   workflow_dispatch:
-  push:
-    branches:
-      - okjack
-      - fongmi
-    paths:
-      - 'apk/**'  # 当 apk 文件夹下的文件有变化时触发工作流
+  # 按计划执行，用于定期检查上游仓库更新
+  schedule:
+    - cron: '0 * * * *'  # 每小时检查一次
 
 jobs:
-  generate-F-json:
+  detect-upstream-update-and-generate-F-json:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
-        with:
-          ref: ${{ github.ref_name }}
+        uses: actions/checkout@v3
+
+      - name: Check upstream repository for changes
+        id: check-upstream
+        run: |
+          # 存储当前的 commit hash
+          current_commit_okjack=$(curl -s https://api.github.com/repos/FongMi/Release/commits/okjack | jq -r '.sha')
+          current_commit_fongmi=$(curl -s https://api.github.com/repos/FongMi/Release/commits/fongmi | jq -r '.sha')
+
+          # 读取之前存储的 commit hash
+          if [ -f previous_commit_okjack.txt ]; then
+            previous_commit_okjack=$(cat previous_commit_okjack.txt)
+          else
+            previous_commit_okjack=""
+          fi
+
+          if [ -f previous_commit_fongmi.txt ]; then
+            previous_commit_fongmi=$(cat previous_commit_fongmi.txt)
+          else
+            previous_commit_fongmi=""
+          fi
+
+          # 检查是否有更新
+          if [ "$current_commit_okjack" != "$previous_commit_okjack" ] || [ "$current_commit_fongmi" != "$previous_commit_fongmi" ]; then
+            echo "Upstream repository has changes. Proceeding to generate F.json."
+            echo "has_updates=true" >> $GITHUB_ENV
+          else
+            echo "No changes detected in the upstream repository. Skipping F.json generation."
+            echo "has_updates=false" >> $GITHUB_ENV
+          fi
+
+          # 更新存储的 commit hash
+          echo "$current_commit_okjack" > previous_commit_okjack.txt
+          echo "$current_commit_fongmi" > previous_commit_fongmi.txt
+
+      - name: Install jq
+        if: env.has_updates == 'true'
+        run: |
+          echo "Installing jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+          echo "jq installed successfully."
 
       - name: Calculate current APK folder MD5
+        if: env.has_updates == 'true'
         run: |
+          echo "Calculating current APK folder MD5..."
           find apk -type f -exec md5sum {} + | sort -k 2 | md5sum | awk '{print $1}' > current_md5.txt
+          if [ ! -s current_md5.txt ]; then
+            echo "Failed to calculate MD5. Exiting..."
+            exit 1
+          fi
+          echo "Current APK folder MD5 calculated: $(cat current_md5.txt)"
 
       - name: Get previous APK folder MD5
+        if: env.has_updates == 'true'
         run: |
+          echo "Getting previous APK folder MD5..."
           if [ -f previous_md5_${{ github.ref_name }}.txt ]; then
             previous_md5=$(cat previous_md5_${{ github.ref_name }}.txt)
           else
             previous_md5=""
           fi
+          echo "Previous APK folder MD5: $previous_md5"
           echo "previous_md5=$previous_md5" >> $GITHUB_ENV
 
       - name: Compare MD5 and decide if to update F.json
+        if: env.has_updates == 'true'
         run: |
           current_md5=$(cat current_md5.txt)
           if [ "$current_md5" = "$previous_md5" ]; then
@@ -44,7 +89,9 @@ jobs:
           fi
 
       - name: Generate F.json
+        if: env.has_updates == 'true'
         run: |
+          echo "Generating F.json..."
           # 初始化 F.json 结构
           echo '[]' > F.json
 
@@ -57,13 +104,6 @@ jobs:
             "肥羊,apk/allinone,https://raw.githubusercontent.com/lystv/fmapp/img/log/feiyang.jpg"
           )
 
-          # 读取 mobile.json 内容
-          if [ -f mobile.json ]; then
-            mobile_json=$(cat mobile.json)
-          else
-            mobile_json="[]"
-          fi
-
           # 遍历两个分支
           for branch in okjack fongmi; do
             for category in "${categories[@]}"; do
@@ -71,13 +111,33 @@ jobs:
               apps=()
               for file in $(find $folder -name "*.apk" -o -name "allinone"); do
                 name=$(basename "$file")
-                url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${branch}/$file"
-                # 从 mobile.json 中获取版本号
-                version=$(echo "$mobile_json" | jq -r ".[] | select(.name == \"$name\") | .version")
+                url="https://raw.githubusercontent.com/FongMi/Release/${branch}/$file"
+
+                # 尝试从对应分支的 mobile.json 中获取版本号和分支区别信息
+                mobile_json_path="https://raw.githubusercontent.com/FongMi/Release/${branch}/apk/release/mobile.json"
+                echo "Fetching mobile.json from $mobile_json_path..."
+                mobile_json_content=$(curl -s "$mobile_json_path")
+                if [ $? -ne 0 ]; then
+                  echo "Failed to fetch $mobile_json_path. Using empty JSON."
+                  mobile_json_content="[]"
+                elif [ -z "$mobile_json_content" ]; then
+                  mobile_json_content="[]"
+                fi
+                version=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .version")
                 if [ "$version" = "null" ]; then
                   version="unknown"
                 fi
-                app_info="{\"name\": \"$name\", \"url\": \"$url\", \"icon\": \"$icon\", \"version\": \"$version\"}"
+
+                # 假设 mobile.json 中有 branch_difference 字段表示分支区别
+                branch_difference=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .branch_difference")
+                if [ "$branch_difference" = "null" ]; then
+                  branch_difference=""
+                fi
+
+                # 合并版本信息和分支区别信息
+                full_version="${version}${branch_difference:+ ($branch_difference)}"
+
+                app_info="{\"name\": \"$name\", \"url\": \"$url\", \"icon\": \"$icon\", \"version\": \"$full_version\"}"
                 apps+=("$app_info")
               done
               category_info="{\"name\": \"$category_name ($branch)\", \"list\": [$(IFS=,; echo "${apps[*]}")]}"
@@ -85,19 +145,27 @@ jobs:
               mv F.json.tmp F.json
             done
           done
+          echo "F.json generated successfully."
 
       - name: Update previous MD5
+        if: env.has_updates == 'true'
         run: |
+          echo "Updating previous MD5..."
           mv current_md5.txt previous_md5_${{ github.ref_name }}.txt
+          echo "Previous MD5 updated."
 
       - name: Commit and push changes
+        if: env.has_updates == 'true'
         run: |
+          echo "Checking for changes to commit..."
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add F.json previous_md5_${{ github.ref_name }}.txt
           if git diff --staged --quiet; then
             echo "No changes to F.json or previous_md5.txt, skipping commit."
           else
+            echo "Committing and pushing changes..."
             git commit -m "Update F.json based on APK folder MD5 change on ${{ github.ref_name }}"
             git push origin ${{ github.ref_name }}
+            echo "Changes committed and pushed successfully."
           fi    
