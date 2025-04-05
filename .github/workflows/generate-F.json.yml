@@ -57,19 +57,33 @@ jobs:
             "肥羊,apk/allinone,https://raw.githubusercontent.com/lystv/fmapp/img/log/feiyang.jpg"
           )
 
-          for category in "${categories[@]}"; do
-            IFS=',' read -r category_name folder icon <<< "$category"
-            apps=()
-            for file in $(find $folder -name "*.apk" -o -name "allinone"); do
-              name=$(basename "$file")
-              url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/$file"
-              version="unknown"  # 这里版本暂时设为 unknown，可根据实际情况修改获取方式
-              app_info="{\"name\": \"$name\", \"url\": \"$url\", \"icon\": \"$icon\", \"version\": \"$version\"}"
-              apps+=("$app_info")
+          # 读取 mobile.json 内容
+          if [ -f mobile.json ]; then
+            mobile_json=$(cat mobile.json)
+          else
+            mobile_json="[]"
+          fi
+
+          # 遍历两个分支
+          for branch in okjack fongmi; do
+            for category in "${categories[@]}"; do
+              IFS=',' read -r category_name folder icon <<< "$category"
+              apps=()
+              for file in $(find $folder -name "*.apk" -o -name "allinone"); do
+                name=$(basename "$file")
+                url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${branch}/$file"
+                # 从 mobile.json 中获取版本号
+                version=$(echo "$mobile_json" | jq -r ".[] | select(.name == \"$name\") | .version")
+                if [ "$version" = "null" ]; then
+                  version="unknown"
+                fi
+                app_info="{\"name\": \"$name\", \"url\": \"$url\", \"icon\": \"$icon\", \"version\": \"$version\"}"
+                apps+=("$app_info")
+              done
+              category_info="{\"name\": \"$category_name ($branch)\", \"list\": [$(IFS=,; echo "${apps[*]}")]}"
+              jq --argjson category_info "$category_info" '. += [$category_info]' F.json > F.json.tmp
+              mv F.json.tmp F.json
             done
-            category_info="{\"name\": \"$category_name\", \"list\": [$(IFS=,; echo "${apps[*]}")]}"
-            jq --argjson category_info "$category_info" '. += [$category_info]' F.json > F.json.tmp
-            mv F.json.tmp F.json
           done
 
       - name: Update previous MD5
