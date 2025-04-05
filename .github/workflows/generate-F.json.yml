@@ -1,0 +1,87 @@
+name: Generate F.json
+
+on:
+  push:
+    branches:
+      - okjack
+      - fongmi
+    paths:
+      - 'apk/**'  # 当 apk 文件夹下的文件有变化时触发工作流
+
+jobs:
+  generate-F-json:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Calculate current APK folder MD5
+        run: |
+          find apk -type f -exec md5sum {} + | sort -k 2 | md5sum | awk '{print $1}' > current_md5.txt
+
+      - name: Get previous APK folder MD5
+        run: |
+          if [ -f previous_md5_${{ github.ref_name }}.txt ]; then
+            previous_md5=$(cat previous_md5_${{ github.ref_name }}.txt)
+          else
+            previous_md5=""
+          fi
+          echo "previous_md5=$previous_md5" >> $GITHUB_ENV
+
+      - name: Compare MD5 and decide if to update F.json
+        run: |
+          current_md5=$(cat current_md5.txt)
+          if [ "$current_md5" = "$previous_md5" ]; then
+            echo "APK folder MD5 hasn't changed, skipping F.json generation."
+            exit 0
+          else
+            echo "APK folder MD5 has changed, proceeding to generate F.json."
+          fi
+
+      - name: Generate F.json
+        run: |
+          # 初始化 F.json 结构
+          echo '[]' > F.json
+
+          # 定义分类及其对应的文件夹和图标
+          categories=(
+            "推薦,apk/release,https://raw.githubusercontent.com/lystv/fmapp/img/log/okys.jpg"
+            "正式版,apk/release,https://raw.githubusercontent.com/lystv/fmapp/img/log/okys.jpg"
+            "內測版,apk/dev,https://raw.githubusercontent.com/lystv/fmapp/img/log/okys.jpg"
+            "4.x版,apk/kitkat,https://raw.githubusercontent.com/lystv/fmapp/img/log/okys.jpg"
+            "肥羊,apk/allinone,https://raw.githubusercontent.com/lystv/fmapp/img/log/feiyang.jpg"
+          )
+
+          for category in "${categories[@]}"; do
+            IFS=',' read -r category_name folder icon <<< "$category"
+            apps=()
+            for file in $(find $folder -name "*.apk" -o -name "allinone"); do
+              name=$(basename "$file")
+              url="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${GITHUB_SHA}/$file"
+              version="unknown"  # 这里版本暂时设为 unknown，可根据实际情况修改获取方式
+              app_info="{\"name\": \"$name\", \"url\": \"$url\", \"icon\": \"$icon\", \"version\": \"$version\"}"
+              apps+=("$app_info")
+            done
+            category_info="{\"name\": \"$category_name\", \"list\": [$(IFS=,; echo "${apps[*]}")]}"
+            jq --argjson category_info "$category_info" '. += [$category_info]' F.json > F.json.tmp
+            mv F.json.tmp F.json
+          done
+
+      - name: Update previous MD5
+        run: |
+          mv current_md5.txt previous_md5_${{ github.ref_name }}.txt
+
+      - name: Commit and push changes
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add F.json previous_md5_${{ github.ref_name }}.txt
+          if git diff --staged --quiet; then
+            echo "No changes to F.json or previous_md5.txt, skipping commit."
+          else
+            git commit -m "Update F.json based on APK folder MD5 change on ${{ github.ref_name }}"
+            git push origin ${{ github.ref_name }}
+          fi    
