@@ -123,16 +123,18 @@ jobs:
                 elif [ -z "$mobile_json_content" ]; then
                   mobile_json_content="[]"
                 fi
-                version=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .version")
-                if [ "$version" = "null" ]; then
-                  version="unknown"
+
+                # 调试信息：输出获取到的 mobile.json 内容
+                echo "Fetched mobile.json content: $mobile_json_content"
+
+                # 检查获取到的内容是否为有效的 JSON 数组
+                if ! echo "$mobile_json_content" | jq -e 'type == "array"' >/dev/null 2>&1; then
+                  echo "Invalid JSON array in mobile.json. Using empty JSON."
+                  mobile_json_content="[]"
                 fi
 
-                # 假设 mobile.json 中有 branch_difference 字段表示分支区别
-                branch_difference=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .branch_difference")
-                if [ "$branch_difference" = "null" ]; then
-                  branch_difference=""
-                fi
+                version=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .version // \"unknown\"")
+                branch_difference=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .branch_difference // \"\"")
 
                 # 合并版本信息和分支区别信息
                 full_version="${version}${branch_difference:+ ($branch_difference)}"
