@@ -113,6 +113,13 @@ jobs:
                 name=$(basename "$file")
                 url="https://raw.githubusercontent.com/FongMi/Release/${branch}/$file"
 
+                # 检查文件是否存在
+                status_code=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+                if [ "$status_code" -ne 200 ]; then
+                  echo "File $url does not exist. Skipping..."
+                  continue
+                fi
+
                 # 尝试从对应分支的 mobile.json 中获取版本号和分支区别信息
                 mobile_json_path="https://raw.githubusercontent.com/FongMi/Release/${branch}/apk/release/mobile.json"
                 echo "Fetching mobile.json from $mobile_json_path..."
@@ -133,7 +140,12 @@ jobs:
                   mobile_json_content="[]"
                 fi
 
+                # 优化版本号提取逻辑，确保默认值
                 version=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .version // \"unknown\"")
+                if [ -z "$version" ]; then
+                  version="unknown"
+                fi
+
                 branch_difference=$(echo "$mobile_json_content" | jq -r ".[] | select(.name == \"$name\") | .branch_difference // \"\"")
 
                 # 合并版本信息和分支区别信息
@@ -142,12 +154,19 @@ jobs:
                 app_info="{\"name\": \"$name\", \"url\": \"$url\", \"icon\": \"$icon\", \"version\": \"$full_version\"}"
                 apps+=("$app_info")
               done
-              category_info="{\"name\": \"$category_name ($branch)\", \"list\": [$(IFS=,; echo "${apps[*]}")]}"
-              jq --argjson category_info "$category_info" '. += [$category_info]' F.json > F.json.tmp
-              mv F.json.tmp F.json
+              if [ ${#apps[@]} -gt 0 ]; then
+                category_info="{\"name\": \"$category_name ($branch)\", \"list\": [$(IFS=,; echo "${apps[*]}")]}"
+                jq --argjson category_info "$category_info" '. += [$category_info]' F.json > F.json.tmp
+                mv F.json.tmp F.json
+              fi
             done
           done
           echo "F.json generated successfully."
+
+          # 过滤掉 list 为空的分类
+          jq '[.[] | select(.list | length > 0)]' F.json > F.json.filtered
+          mv F.json.filtered F.json
+          echo "Filtered empty lists from F.json."
 
       - name: Update previous MD5
         if: env.has_updates == 'true'
